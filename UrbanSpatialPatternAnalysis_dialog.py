@@ -464,9 +464,11 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                     'threshold_min': 2, 
                     'grid_size': calculated_pixels # <--- 传计算后的像素
                 }),
+                # [关键修改] Skyline 现在使用 calculated_pixels (传入参数名为 grid_size_px)
+                # 这解决了 WGS84 坐标系下用“500”除以“度”导致的内存崩溃问题
                 "skyline": (skyline_index.calculate_skyline_index, {
                     'input_height_tif': real_height_path,
-                    'grid_size': target_grid_size # Skyline 核心接收米，保持不变
+                    'grid_size_px': calculated_pixels 
                 }),
                 "avg_height": (average_building_height.calculate_average_building_height, {
                     'input_height_tif': real_height_path,
@@ -485,7 +487,7 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 # intersection_density Keep as is
                 "intersection_density": (intersection_density.calculate_intersection_density, {
                     'boundary_path': boundary_shp_path if boundary_shp_path else None, 
-                    'road_path': road_shp_path,
+                    'road_path': road_shp_path, 
                     'output_tif_path': output_tif_path,
                     'grid_size': target_grid_size, # Intersection 接收米，保持不变
                     'missing_boundary_strategy': missing_boundary_strategy
@@ -544,7 +546,7 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                     # 既然现在 target_grid_size 就是用户输入的“米”，我们直接展示它
                     actual_meters_approx = target_grid_size 
                     
-                    if indicator_id in ["bcr", "ci", "pd", "ed", "avg_height"]:
+                    if indicator_id in ["bcr", "ci", "pd", "ed", "avg_height", "skyline"]:
                         # 这些指标使用了 calculated_pixels，展示一下换算结果
                         real_grid_str = f"{actual_meters_approx} Meters (converted to ~{calculated_pixels} pixels)"
                     else:

@@ -6,7 +6,7 @@
 name=UrbanSpatialPatternAnalysis
 qgisMinimumVersion=3.0
 description=UrbanSpatialPatternAnalysis
-version=0.1
+version=0.2
 author=Ricky HU
 email=rk_h@outlook.com
 

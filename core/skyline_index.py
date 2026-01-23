@@ -4,7 +4,8 @@ import rasterio
 import numpy as np
 import pandas as pd
 
-def calculate_skyline_index(input_height_tif, output_tif_path, grid_size=500, output_csv_path=None):
+# [修改] 参数 grid_size 改为 grid_size_px，明确接收像素数
+def calculate_skyline_index(input_height_tif, output_tif_path, grid_size_px=100, output_csv_path=None):
     try:
         print(f"Start processing Skyline Index: {input_height_tif}")
         with rasterio.open(input_height_tif) as src:
@@ -13,15 +14,13 @@ def calculate_skyline_index(input_height_tif, output_tif_path, grid_size=500, ou
             crs = src.crs
             original_shape = height_data.shape
             
-            # Get resolution (assuming pixels are square)
-            pixel_size_x = abs(transform[0])
-            
-            # 1. Convert user input 'meters' to 'pixel count'
-            grid_size_px = int(grid_size / pixel_size_x)
+            # [修复] 删除了错误的米到像素的换算逻辑
+            # 直接使用传入的 grid_size_px (由前端 Dialog 正确计算)
+            # 因为之前用 grid_size (米) 除以 WGS84 的 pixel_size (度) 导致了内存爆炸
             if grid_size_px < 1:
                 grid_size_px = 1
             
-            print(f"Grid setting: {grid_size} meters => {grid_size_px} pixels (Resolution: {pixel_size_x})")
+            print(f"Grid setting (Pixels): {grid_size_px}")
 
         rows, cols = original_shape
         
