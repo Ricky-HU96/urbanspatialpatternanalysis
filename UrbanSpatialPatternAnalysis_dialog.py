@@ -263,7 +263,9 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
         
         output_tif_path = self.outputFileWidget.filePath()
         should_output_csv = self.csvOutputCheckBox.isChecked()
-        should_output_png = self.pngOutputCheckBox.isChecked() and self.pngOutputCheckBox.isVisible()
+
+        # [Fix] For Shape Index, do not rely on isVisible() (may be False due to parent/layout visibility)
+        should_output_png = self.pngOutputCheckBox.isChecked() if indicator_id == "si" else (self.pngOutputCheckBox.isChecked() and self.pngOutputCheckBox.isVisible())
 
         if not output_tif_path:
             QMessageBox.critical(self, "Error", "You must specify an output raster (.tif) file path!")
@@ -339,22 +341,22 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 missing_boundary_strategy = None 
         # --- [Modification End] ---
 
-        # --- Grid Size Parameter Input ---
+        # --- Grid Size Parameter Input (Unified to METERS) ---
         DEFAULT_GRID_SIZE = 500  
         target_grid_size = DEFAULT_GRID_SIZE
         
-        # [Modify]: Add intersection_density to the list requiring grid parameters
-        indicators_requiring_grid = ["ed", "road_density", "skyline", "avg_height", "intersection_density"]
+        # [Modify]: Add bcr, ci, pd to the list requiring grid parameters
+        indicators_requiring_grid = ["bcr", "ci", "pd", "ed", "road_density", "skyline", "avg_height", "intersection_density"]
         
         if indicator_id in indicators_requiring_grid:
+            # [关键修改] 统一提示用户输入“米”，无论底层数据是什么单位
+            # 这样你只需要输入 500，代码会在后面帮你算成像素
             prompt_label = "Set Analysis Grid Size (Meters):"
-            if indicator_id == "ed":
-                prompt_label = "Set Analysis Grid Size (Pixels for ED, Meters for others):"
-
+            
             input_grid, ok = QInputDialog.getInt(
                 self, 
                 "Grid Size Setting", 
-                f"{prompt_label}\n(This determines the resolution of the result)", 
+                f"{prompt_label}\n(This determines the resolution of the result.\nWe will auto-convert to pixels if needed.)", 
                 value=500,  
                 min=10,    
                 max=10000, 
@@ -378,32 +380,79 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
             real_height_path = raw_height_path
             
             used_resolution = 0
+            is_geographic = False # [新增] 标记是否为地理坐标系(度)
 
             build_raster_indicators = ["bcr", "ci"]
             height_raster_indicators = ["pd", "si", "ed", "skyline", "avg_height"]
 
+            # --- Preprocessing & Resolution Detection ---
             if indicator_id in build_raster_indicators and raw_build_path:
                 real_build_path, res = self.preprocess_input(raw_build_path, input_type='binary')
                 if res > 0: used_resolution = res
+                # [新增] 检查坐标系
+                try:
+                    ds = gdal.Open(real_build_path)
+                    if ds:
+                        prj = ds.GetProjection()
+                        srs = osr.SpatialReference(wkt=prj)
+                        if srs.IsGeographic(): is_geographic = True
+                except: pass
             
             if indicator_id in height_raster_indicators and raw_height_path:
                 real_height_path, res = self.preprocess_input(raw_height_path, input_type='height')
                 if res > 0: used_resolution = res
+                # [新增] 检查坐标系
+                try:
+                    ds = gdal.Open(real_height_path)
+                    if ds:
+                        prj = ds.GetProjection()
+                        srs = osr.SpatialReference(wkt=prj)
+                        if srs.IsGeographic(): is_geographic = True
+                except: pass
 
-            avg_height_grid_pixels = 256 
-            if indicator_id == "avg_height" and used_resolution > 0:
-                avg_height_grid_pixels = int(target_grid_size / used_resolution)
-                if avg_height_grid_pixels < 1: avg_height_grid_pixels = 1
+            # --- [关键修改] 智能计算像素数 (Calculated Pixels) ---
+            # 目标：将用户输入的 target_grid_size (米) 转换为 核心算法需要的 grid_size (像素)
+            calculated_pixels = 256 # 默认备用值
+            
+            if used_resolution > 0:
+                if is_geographic:
+                    # 如果是度：1度 ≈ 111320米 (赤道估算)
+                    # 算法：(目标米数 / 111320) / 分辨率度数
+                    degree_equivalent = target_grid_size / 111320.0
+                    calculated_pixels = int(degree_equivalent / used_resolution)
+                else:
+                    # 如果是米：直接除
+                    calculated_pixels = int(target_grid_size / used_resolution)
+                
+                # 最小保护
+                if calculated_pixels < 1: calculated_pixels = 1
+            else:
+                # 如果没读取到分辨率，就假设用户输入的就是像素
+                calculated_pixels = target_grid_size
+            
+            # Avg Height 之前有自己单独的逻辑，现在统一用 calculated_pixels
+            avg_height_grid_pixels = calculated_pixels
 
             success = False
             global_result_msg = "" 
             
+            # [Modification] Updated analysis_map to use calculated_pixels where appropriate
+            # 规则：
+            # 1. BCR, CI, PD, ED, AvgHeight 核心代码接收像素 -> 传 calculated_pixels
+            # 2. Skyline, Road, Intersection 核心代码接收米 -> 传 target_grid_size
+            
             analysis_map = {
-                "bcr": (building_coverage_rate.calculate_building_coverage_rate, {'input_build_tif': real_build_path}),
-                "ci": (compactness_index.calculate_compactness, {'input_build_tif': real_build_path}),
+                "bcr": (building_coverage_rate.calculate_building_coverage_rate, {
+                    'input_build_tif': real_build_path,
+                    'grid_size': calculated_pixels # <--- 传计算后的像素
+                }),
+                "ci": (compactness_index.calculate_compactness, {
+                    'input_build_tif': real_build_path,
+                    'grid_size': calculated_pixels # <--- 传计算后的像素
+                }),
                 "pd": (patch_density.calculate_patch_density, {
                     'input_height_tif': real_height_path, 
-                    'grid_size': 10,
+                    'grid_size': calculated_pixels, # <--- 传计算后的像素
                     'threshold_min': 2
                 }),
                 "si": (shape_index.calculate_shape_index, {
@@ -413,15 +462,15 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 "ed": (edge_density.calculate_edge_density, {
                     'input_height_tif': real_height_path,
                     'threshold_min': 2, 
-                    'grid_size': target_grid_size 
+                    'grid_size': calculated_pixels # <--- 传计算后的像素
                 }),
                 "skyline": (skyline_index.calculate_skyline_index, {
                     'input_height_tif': real_height_path,
-                    'grid_size': target_grid_size
+                    'grid_size': target_grid_size # Skyline 核心接收米，保持不变
                 }),
                 "avg_height": (average_building_height.calculate_average_building_height, {
                     'input_height_tif': real_height_path,
-                    'grid_size': avg_height_grid_pixels, 
+                    'grid_size': calculated_pixels, # <--- 传计算后的像素
                     'threshold_min': 0.1 
                 }),
                 
@@ -429,16 +478,16 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 "road_density": (road_density.calculate_road_density, {
                     'boundary_path': boundary_shp_path if boundary_shp_path else None, 
                     'road_path': road_shp_path, 
-                    'grid_size': target_grid_size,
+                    'grid_size': target_grid_size, # Road 接收米，保持不变
                     'missing_boundary_strategy': missing_boundary_strategy
                 }),
                 
-                # [Modify] intersection_density: Pass strategy and grid_size
+                # intersection_density Keep as is
                 "intersection_density": (intersection_density.calculate_intersection_density, {
                     'boundary_path': boundary_shp_path if boundary_shp_path else None, 
                     'road_path': road_shp_path,
                     'output_tif_path': output_tif_path,
-                    'grid_size': target_grid_size,  # Use user input value
+                    'grid_size': target_grid_size, # Intersection 接收米，保持不变
                     'missing_boundary_strategy': missing_boundary_strategy
                 })
             }
@@ -467,8 +516,6 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 # --- [Modification End] ---------------------------------
                 
                 # Merge parameters
-                # Note: intersection_density parameters like output_tif_path are already passed in map above
-                # But updating here again won't hurt
                 all_params = {**params}
                 if 'output_tif_path' not in all_params:
                     all_params['output_tif_path'] = output_tif_path
@@ -491,24 +538,24 @@ class UrbanSpatialPatternAnalysisDialog(QDialog, Ui_UrbanSpatialPatternAnalysisD
                 message = f'Result successfully saved to:\n{output_tif_path}'
                 
                 if used_resolution > 0:
-                    unit_hint = "Degrees" if used_resolution < 0.1 else "Meters"
-                    display_grid_size = target_grid_size if indicator_id in indicators_requiring_grid else DEFAULT_GRID_SIZE
+                    unit_label = "Degrees" if is_geographic else "Meters"
                     
-                    if indicator_id == "road_density" or indicator_id == "intersection_density":
-                         real_grid_str = f"{display_grid_size} Meters (or consistent with CRS)"
-                    elif indicator_id == "skyline":
-                         real_grid_str = f"{display_grid_size} Meters (Side length)"
-                    elif indicator_id == "avg_height":
-                         real_grid_str = f"{display_grid_size} Meters (Side length)"
+                    # [修改] 结果信息展示逻辑，显示真实的物理距离
+                    # 既然现在 target_grid_size 就是用户输入的“米”，我们直接展示它
+                    actual_meters_approx = target_grid_size 
+                    
+                    if indicator_id in ["bcr", "ci", "pd", "ed", "avg_height"]:
+                        # 这些指标使用了 calculated_pixels，展示一下换算结果
+                        real_grid_str = f"{actual_meters_approx} Meters (converted to ~{calculated_pixels} pixels)"
                     else:
-                         real_grid_str = f"≈ {used_resolution * display_grid_size:.2f} {unit_hint}"
-                    
+                        real_grid_str = f"{actual_meters_approx} Meters"
+
                     grid_info = (
                         f"\n\n----------------------------\n"
                         f"[Spatial Parameter Information]\n"
-                        f"1. Original Resolution: {used_resolution:.6f} {unit_hint}\n"
-                        f"2. Analysis Grid Setting: {display_grid_size}\n"
-                        f"3. Actual Grid Size: {real_grid_str}\n"
+                        f"1. Input Unit: {unit_label}\n"
+                        f"2. Original Resolution: {used_resolution:.6f}\n"
+                        f"3. Analysis Grid: {real_grid_str}\n"
                         f"----------------------------"
                     )
                     message += grid_info
