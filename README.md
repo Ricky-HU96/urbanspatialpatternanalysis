@@ -3,6 +3,7 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 **Urban Spatial Pattern Analysis** is a QGIS 3 plugin for analyzing urban spatial patterns. It provides **9 indicators** commonly used in urban morphology and spatial-structure studies. The plugin supports raster and vector inputs, outputs GeoTIFF results (optional CSV summaries; optional histogram PNG for Shape Index), and is suitable for grid-based urban built-environment analysis and visualization.
+QGIS Repository: https://plugins.qgis.org/plugins/urbanspatialpatternanalysis/
 
 ---
 
